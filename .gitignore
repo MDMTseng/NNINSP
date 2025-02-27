@@ -1,0 +1,15 @@
+*.pth
+*.onnx
+venv/
+build/
+__pycache__/
+EfficientNet/NEU-DET/
+EfficientNet/results/
+EfficientNet/sample_visualizations/
+PatchCore/marble/
+PatchCore/models/
+PatchCore/results/
+
+.DS_Store
+Native/model.mlpackage/
+EfficientNet/training_history.json

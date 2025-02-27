@@ -1,0 +1,13 @@
+# 基本依賴
+torch>=1.9.0
+torchvision>=0.10.0
+opencv-python>=4.5.0
+numpy>=1.19.0
+
+# 模型轉換
+onnx>=1.10.0
+onnxruntime>=1.8.0
+
+# 平台特定依賴
+coremltools>=5.0.0; platform_system == "Darwin"  # 僅 macOS
+tensorrt>=8.0.0; platform_system == "Windows"    # 僅 Windows 
