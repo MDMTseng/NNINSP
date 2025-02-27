@@ -3,7 +3,7 @@ import torch.nn as nn
 import timm
 
 class SegmentationModel(nn.Module):
-    def __init__(self, num_classes=6):
+    def __init__(self, num_classes=7):
         super().__init__()
         # Create encoder using timm
         self.encoder = timm.create_model('efficientnet_b2', 

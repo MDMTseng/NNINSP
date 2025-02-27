@@ -49,7 +49,7 @@ def validate(model, val_loader, criterion, device):
 
 def train_model(model, train_loader, val_loader, device, num_epochs=50, start_epoch=0):
     class DiceLoss(nn.Module):
-        def __init__(self, num_classes=6):
+        def __init__(self, num_classes=7):
             super(DiceLoss, self).__init__()
             self.num_classes = num_classes
 
@@ -78,7 +78,7 @@ def train_model(model, train_loader, val_loader, device, num_epochs=50, start_ep
     # Combined loss with adjusted weighting (more weight on CrossEntropy)
     criterion = lambda outputs, targets: (
         0.7 * nn.CrossEntropyLoss()(outputs, targets) + 
-        0.3 * DiceLoss(num_classes=6)(outputs, targets)
+        0.3 * DiceLoss(num_classes=7)(outputs, targets)
     )
 
     # Use AdamW with adjusted parameters
@@ -264,12 +264,7 @@ def main():
         exit()
     val_dataset = PlatingDefectDataset(
         root_dir='NEU-DET',
-        transform=transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                              std=[0.229, 0.224, 0.225])
-        ]),
+        transform=image_transform,
         train=False
     )
     

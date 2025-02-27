@@ -14,8 +14,8 @@ from model import SegmentationModel
 
 class PlatingDefectDetector:
     def __init__(self, model_path=None):
-        # Define defect types
-        self.defect_types = ['crazing', 'inclusion', 'patches', 'pitted_surface', 'rolled-in_scale', 'scratches']
+        # Define defect types with OK as first class
+        self.defect_types = ['OK', 'crazing', 'inclusion', 'patches', 'pitted_surface', 'rolled-in_scale', 'scratches']
         self.num_classes = len(self.defect_types)
         
         # Initialize device
@@ -48,7 +48,14 @@ class PlatingDefectDetector:
         model.eval()
         return model
 
-    def detect_defect(self, image_path, threshold=0.5):
+    def detect_defect(self, image_path, threshold=0.5, ok_sensitivity=1.0):
+        """
+        Detect defects in an image with adjustable sensitivity
+        Args:
+            image_path: Path to the image
+            threshold: Probability threshold for defect detection
+            ok_sensitivity: Value to multiply OK class probabilities (lower values make detection more sensitive)
+        """
         # Load and preprocess image
         image = Image.open(image_path).convert('RGB')
         original_size = image.size
@@ -63,43 +70,44 @@ class PlatingDefectDetector:
             # Apply softmax to get probabilities
             probabilities = torch.softmax(output, dim=1)
             
-            # Apply threshold to probabilities
-            thresholded_probs = (probabilities > threshold).float() * probabilities
-            # Get predicted class for each pixel (highest probability above threshold)
-            predictions = torch.argmax(thresholded_probs, dim=1)
-            # Create background mask where no class exceeds threshold
-            background_mask = (probabilities.max(dim=1)[0] <= threshold)
-            predictions[background_mask] = -1  # -1 indicates no confident prediction
+            # Adjust OK class (index 0) probability by sensitivity factor
+            probabilities[:, 0] *= ok_sensitivity
             
-        # Convert predictions to numpy
-        pred_mask = predictions[0].cpu().numpy()
-        prob_masks = probabilities[0].cpu().numpy()
-        
-        # Resize masks back to original size
-        resized_pred = Image.fromarray((pred_mask + 1).astype(np.uint8))  # Add 1 to handle -1
-        resized_pred = resized_pred.resize(original_size, Image.Resampling.NEAREST)
-        pred_mask = np.array(resized_pred) - 1  # Subtract 1 to restore -1
-        
-        # Resize probability masks
-        resized_probs = []
-        for prob_mask in prob_masks:
-            prob_img = Image.fromarray((prob_mask * 255).astype(np.uint8))
-            prob_img = prob_img.resize(original_size, Image.Resampling.BILINEAR)
-            resized_probs.append(np.array(prob_img) / 255.0)
-        
-        prob_masks = np.stack(resized_probs)
-        
-        return pred_mask, prob_masks
+            # Renormalize probabilities after adjustment
+            probabilities = probabilities / probabilities.sum(dim=1, keepdim=True)
+            
+            # Get predicted class for each pixel (highest probability)
+            predictions = torch.argmax(probabilities, dim=1)
+            
+            # Convert predictions to numpy
+            pred_mask = predictions[0].cpu().numpy()
+            prob_masks = probabilities[0].cpu().numpy()
+            
+            # Resize masks back to original size
+            resized_pred = Image.fromarray(pred_mask.astype(np.uint8))
+            resized_pred = resized_pred.resize(original_size, Image.Resampling.NEAREST)
+            pred_mask = np.array(resized_pred)
+            
+            # Resize probability masks
+            resized_probs = []
+            for prob_mask in prob_masks:
+                prob_img = Image.fromarray((prob_mask * 255).astype(np.uint8))
+                prob_img = prob_img.resize(original_size, Image.Resampling.BILINEAR)
+                resized_probs.append(np.array(prob_img) / 255.0)
+            
+            prob_masks = np.stack(resized_probs)
+            
+            return pred_mask, prob_masks
 
     def visualize_results(self, image_path, pred_mask, prob_masks, save_path=None):
         # Load original image
         original = Image.open(image_path).convert('RGB')
         original_np = np.array(original)
         
-        # Create figure with subplots
+        # Create figure with subplots - Updated for 7 classes (OK + 6 defects)
         num_rows = 2
-        num_cols = 4
-        plt.figure(figsize=(20, 10))
+        num_cols = 5  # Increased from 4 to 5 to fit all probability maps
+        plt.figure(figsize=(25, 10))  # Increased width to accommodate more subplots
         
         # Plot original image
         plt.subplot(num_rows, num_cols, 1)
@@ -109,19 +117,20 @@ class PlatingDefectDetector:
         
         # Create color map for different defect types
         colors = [
-            [1, 0, 0],    # Red for crazing
-            [0, 1, 0],    # Green for inclusion
-            [0, 0, 1],    # Blue for patches
-            [1, 1, 0],    # Yellow for pitted_surface
-            [1, 0, 1],    # Magenta for rolled-in_scale
-            [0, 1, 1],    # Cyan for scratches
+            [0.5, 0.5, 0.5],  # Gray for OK
+            [1, 0, 0],        # Red for crazing
+            [0, 1, 0],        # Green for inclusion
+            [0, 0, 1],        # Blue for patches
+            [1, 1, 0],        # Yellow for pitted_surface
+            [1, 0, 1],        # Magenta for rolled-in_scale
+            [0, 1, 1],        # Cyan for scratches
         ]
         
         # Create overlay mask
         h, w, c = original_np.shape
         overlay = np.zeros((h, w, c), dtype=np.float32)
         
-        # Add colors for each class (skip -1 which indicates no confident prediction)
+        # Add colors for each class
         for class_idx in range(self.num_classes):
             mask = pred_mask == class_idx
             if mask.any():  # Only add color if this class is present
@@ -136,7 +145,7 @@ class PlatingDefectDetector:
         # Plot blended image
         plt.subplot(num_rows, num_cols, 2)
         plt.imshow(blended)
-        plt.title('Segmentation Overlay\n(Confident Predictions Only)')
+        plt.title('Segmentation Overlay')
         plt.axis('off')
         
         # Add colorbar legend for defect types
@@ -210,7 +219,7 @@ class PlatingDefectDetector:
         
         return fps
 
-def process_test_folder(model_path, test_folder, output_folder, num_samples=10, threshold=0.5):
+def process_test_folder(model_path, test_folder, output_folder, num_samples=10, threshold=0.5, ok_sensitivity=1.0):
     """
     Process randomly selected images from test folder
     
@@ -220,6 +229,7 @@ def process_test_folder(model_path, test_folder, output_folder, num_samples=10, 
         output_folder: Folder to save results
         num_samples: Number of random images to process (default: 10)
         threshold: Probability threshold for confident predictions
+        ok_sensitivity: Sensitivity factor for OK class (lower values = more sensitive detection)
     """
     # Initialize detector
     detector = PlatingDefectDetector(model_path=model_path)
@@ -246,8 +256,12 @@ def process_test_folder(model_path, test_folder, output_folder, num_samples=10, 
     for i, image_path in enumerate(selected_images, 1):
         print(f"\nProcessing image {i}/{num_samples}: {image_path}")
         
-        # Get predictions with threshold
-        pred_mask, prob_masks = detector.detect_defect(image_path, threshold=threshold)
+        # Get predictions with threshold and sensitivity
+        pred_mask, prob_masks = detector.detect_defect(
+            image_path, 
+            threshold=threshold,
+            ok_sensitivity=ok_sensitivity
+        )
         
         # Create output filename
         base_name = os.path.splitext(os.path.basename(image_path))[0]
@@ -280,6 +294,8 @@ def main():
     parser.add_argument('-fps', action='store_true', help='Run speed test only')
     parser.add_argument('-n', type=int, default=10, help='Number of random images to test (default: 10)')
     parser.add_argument('-f', '--file', type=str, help='Path to single image for inference')
+    parser.add_argument('-s', '--sensitivity', type=float, default=1.0, 
+                        help='Detection sensitivity (lower values = more sensitive, default: 1.0)')
     args = parser.parse_args()
     
     # Set paths
@@ -300,8 +316,12 @@ def main():
         # Create output folder if it doesn't exist
         os.makedirs(output_folder, exist_ok=True)
         
-        # Get predictions
-        pred_mask, prob_masks = detector.detect_defect(args.file, threshold=0.5)
+        # Get predictions with sensitivity
+        pred_mask, prob_masks = detector.detect_defect(
+            args.file, 
+            threshold=0.5,
+            ok_sensitivity=args.sensitivity
+        )
         
         # Create output filename
         base_name = os.path.splitext(os.path.basename(args.file))[0]
@@ -331,7 +351,13 @@ def main():
         fps = detector.test_inference_speed(test_image)
     else:
         print(f"\nProcessing {args.n} random images...")
-        process_test_folder(model_path, test_folder, output_folder, num_samples=args.n)
+        process_test_folder(
+            model_path, 
+            test_folder, 
+            output_folder, 
+            num_samples=args.n,
+            ok_sensitivity=args.sensitivity
+        )
 
 if __name__ == '__main__':
     main() 
