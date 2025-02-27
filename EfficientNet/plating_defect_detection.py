@@ -117,41 +117,38 @@ class PlatingDefectDetector:
         
         # Create color map for different defect types
         colors = [
-            [0.5, 0.5, 0.5],  # Gray for OK
-            [1, 0, 0],        # Red for crazing
-            [0, 1, 0],        # Green for inclusion
-            [0, 0, 1],        # Blue for patches
-            [1, 1, 0],        # Yellow for pitted_surface
-            [1, 0, 1],        # Magenta for rolled-in_scale
-            [0, 1, 1],        # Cyan for scratches
+            [0, 0, 0, 0],      # Transparent for OK
+            [1, 0, 0, 0.7],    # Semi-transparent Red for crazing
+            [0, 1, 0, 0.7],    # Semi-transparent Green for inclusion
+            [0, 0, 1, 0.7],    # Semi-transparent Blue for patches
+            [1, 1, 0, 0.7],    # Semi-transparent Yellow for pitted_surface
+            [1, 0, 1, 0.7],    # Semi-transparent Magenta for rolled-in_scale
+            [0, 1, 1, 0.7],    # Semi-transparent Cyan for scratches
         ]
         
-        # Create overlay mask
-        h, w, c = original_np.shape
-        overlay = np.zeros((h, w, c), dtype=np.float32)
+        # Create overlay mask with alpha channel
+        h, w, _ = original_np.shape
+        overlay = np.zeros((h, w, 4), dtype=np.float32)  # RGBA
         
         # Add colors for each class
         for class_idx in range(self.num_classes):
             mask = pred_mask == class_idx
-            if mask.any():  # Only add color if this class is present
+            if mask.any() and class_idx > 0:  # Skip OK class (index 0)
                 color = np.array(colors[class_idx])
-                for i in range(3):  # Apply color to RGB channels
+                for i in range(4):  # Apply RGBA channels
                     overlay[..., i][mask] = color[i]
         
-        # Blend original image with overlay
-        alpha = 0.5  # Transparency of the overlay
-        blended = (original_np * (1 - alpha) + overlay * 255 * alpha).astype(np.uint8)
-        
-        # Plot blended image
+        # Plot segmentation result
         plt.subplot(num_rows, num_cols, 2)
-        plt.imshow(blended)
+        plt.imshow(original)  # Plot original image first
+        plt.imshow(overlay, alpha=overlay[..., 3])  # Overlay with transparency
         plt.title('Segmentation Overlay')
         plt.axis('off')
         
-        # Add colorbar legend for defect types
-        legend_elements = [plt.Rectangle((0, 0), 1, 1, fc=colors[i]) 
-                          for i in range(self.num_classes)]
-        plt.legend(legend_elements, self.defect_types, 
+        # Add colorbar legend for defect types (skip OK class)
+        legend_elements = [plt.Rectangle((0, 0), 1, 1, fc=colors[i][:3], alpha=0.7) 
+                          for i in range(1, self.num_classes)]  # Skip OK class
+        plt.legend(legend_elements, self.defect_types[1:],  # Skip OK in legend
                   loc='center left', bbox_to_anchor=(1, 0.5))
         
         # Plot probability maps for each defect type
@@ -165,7 +162,7 @@ class PlatingDefectDetector:
         plt.tight_layout()
         
         if save_path:
-            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            plt.savefig(save_path, bbox_inches='tight', dpi=300, transparent=True)
             print(f"Results saved to {save_path}")
         else:
             plt.show()

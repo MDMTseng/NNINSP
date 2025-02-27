@@ -187,69 +187,98 @@ class PlatingDefectDataset(Dataset):
                 class_idx = self.defect_to_idx[defect_type]
                 bbox = obj.find('bndbox')
                 
-                xmin = int(float(bbox.find('xmin').text))-5
-                ymin = int(float(bbox.find('ymin').text))-5
-                xmax = int(float(bbox.find('xmax').text))+5
-                ymax = int(float(bbox.find('ymax').text))+5
+                xmin = max(0, int(float(bbox.find('xmin').text))-5)
+                ymin = max(0, int(float(bbox.find('ymin').text))-5)
+                xmax = min(original_size[0], int(float(bbox.find('xmax').text))+5)
+                ymax = min(original_size[1], int(float(bbox.find('ymax').text))+5)
                 
-                xmin = max(0, xmin)
-                ymin = max(0, ymin)
-                xmax = min(original_size[0], xmax)
-                ymax = min(original_size[1], ymax)
-                
-                # Set defect area and remove OK class in that area
                 mask[class_idx, ymin:ymax, xmin:xmax] = 1.0
                 mask[0, ymin:ymax, xmin:xmax] = 0.0
         
-        # if self.image_transform is not None:
-        if True:
-            # Add reflection padding to both image and mask
+        if self.train:
+            # Convert image to tensor first for faster operations
+            image = transforms.ToTensor()(image)
+            
+            # Add reflection padding efficiently
             padding_size = 150
-            padded_image = transforms.Pad(padding_size, padding_mode='reflect')(image)
-            padded_masks = [transforms.Pad(padding_size, padding_mode='reflect')(Image.fromarray((m.numpy() * 255).astype(np.uint8))) 
-                        for m in mask]
+            padded_image = torch.nn.functional.pad(
+                image.unsqueeze(0), 
+                (padding_size,)*4, 
+                mode='reflect'
+            )[0]
             
-            # Generate random seed for consistent transformations
-            seed = torch.randint(0, 2**32, (1,))[0].item()
+            # Pad all masks at once
+            padded_mask = torch.nn.functional.pad(
+                mask, 
+                (padding_size,)*4, 
+                mode='reflect'
+            )
             
-            # Create transform sequence
-            aug_transforms = transforms.Compose([
-                # transforms.Resize((256 + 2*padding_size, 256 + 2*padding_size)),
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomAffine(
-                    degrees=20,
-                    translate=(0.1, 0.1),
-                    scale=(0.9, 1.4),
-                    fill=None  # Use reflection padding
-                ),
-                transforms.CenterCrop(256),
-            ])
+            # Generate random parameters for transforms
+            do_flip = random.random() < 0.5
+            angle = random.uniform(-20, 20)
+            tx = random.uniform(-0.1, 0.1)
+            ty = random.uniform(-0.1, 0.1)
+            scale = random.uniform(0.9, 1.4)
             
-            # Apply same geometric transforms to both image and masks
-            torch.manual_seed(seed)
-            random.seed(seed)
-            image = aug_transforms(padded_image)
+            # Apply geometric transforms to image and mask together
+            if do_flip:
+                padded_image = torch.flip(padded_image, [-1])
+                padded_mask = torch.flip(padded_mask, [-1])
             
-            transformed_masks = []
-            for m in padded_masks:
-                torch.manual_seed(seed)
-                random.seed(seed)
-                transformed_mask = aug_transforms(m)
-                transformed_masks.append(torch.from_numpy(np.array(transformed_mask)).float() / 255.0)
+            # Apply affine transform
+            affine_params = transforms.RandomAffine.get_params(
+                degrees=(-20, 20),
+                translate=(0.1, 0.1),
+                scale_ranges=(0.9, 1.4),
+                shears=None,
+                img_size=padded_image.shape[-2:]
+            )
+            
+            padded_image = transforms.functional.affine(
+                padded_image, *affine_params, interpolation=transforms.InterpolationMode.BILINEAR
+            )
+            padded_mask = transforms.functional.affine(
+                padded_mask, *affine_params, interpolation=transforms.InterpolationMode.NEAREST
+            )
+            
+            # Center crop
+            crop_size = 256
+            h, w = padded_image.shape[-2:]
+            top = (h - crop_size) // 2
+            left = (w - crop_size) // 2
+            
+            image = padded_image[:, top:top+crop_size, left:left+crop_size]
+            mask = padded_mask[:, top:top+crop_size, left:left+crop_size]
             
             # Apply color transforms only to image
-            color_transforms = transforms.Compose([
-                transforms.ColorJitter(brightness=0.2, contrast=0.2),
+            if random.random() < 0.8:  # 80% chance of color augmentation
+                brightness = random.uniform(0.8, 1.2)
+                contrast = random.uniform(0.8, 1.2)
+                image = transforms.functional.adjust_brightness(image, brightness)
+                image = transforms.functional.adjust_contrast(image, contrast)
+            
+            # Normalize
+            image = transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )(image)
+            
+        else:
+            # For validation, only apply basic transforms
+            image = transforms.Compose([
+                transforms.Resize((256, 256)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                std=[0.229, 0.224, 0.225])
-            ])
-            image = color_transforms(image)
+                                  std=[0.229, 0.224, 0.225])
+            ])(image)
             
-            # Stack transformed masks
-            mask = torch.stack(transformed_masks)
+            mask = transforms.Resize(
+                (256, 256), 
+                interpolation=transforms.InterpolationMode.NEAREST
+            )(mask)
         
-        # Convert one-hot encoded mask to class indices
+        # Convert mask to class indices
         mask = mask.argmax(dim=0)
         
         return image, mask, label 
