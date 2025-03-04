@@ -214,21 +214,14 @@ class PlatingDefectDataset(Dataset):
                 mode='reflect'
             )
             
-            # Generate random parameters for transforms
-            do_flip = random.random() < 0.5
-            angle = random.uniform(-20, 20)
-            tx = random.uniform(-0.1, 0.1)
-            ty = random.uniform(-0.1, 0.1)
-            scale = random.uniform(0.9, 1.4)
-            
-            # Apply geometric transforms to image and mask together
-            if do_flip:
+            # Apply geometric transforms
+            if random.random() < 0.5:
                 padded_image = torch.flip(padded_image, [-1])
                 padded_mask = torch.flip(padded_mask, [-1])
             
             # Apply affine transform
             affine_params = transforms.RandomAffine.get_params(
-                degrees=(-20, 20),
+                degrees=(-180, 180),
                 translate=(0.1, 0.1),
                 scale_ranges=(0.9, 1.4),
                 shears=None,
@@ -242,6 +235,39 @@ class PlatingDefectDataset(Dataset):
                 padded_mask, *affine_params, interpolation=transforms.InterpolationMode.NEAREST
             )
             
+            # NEW: Random brightness/exposure adjustment
+            if random.random() < 0.7:  # 70% chance to apply
+                brightness_factor = random.uniform(0.7, 1.3)
+                padded_image = transforms.functional.adjust_brightness(padded_image, brightness_factor)
+            
+            # NEW: Random contrast adjustment
+            if random.random() < 0.5:  # 50% chance to apply
+                contrast_factor = random.uniform(0.8, 1.2)
+                padded_image = transforms.functional.adjust_contrast(padded_image, contrast_factor)
+                
+            # NEW: Add gradient tint (simulates uneven lighting)
+            if random.random() < 0.4:  # 40% chance to apply
+                h, w = padded_image.shape[-2:]
+                
+                # Create random gradient direction
+                direction = random.choice(['horizontal', 'vertical', 'diagonal'])
+                strength = random.uniform(0.05, 0.2)  # Controls the intensity of the gradient
+                
+                # Create gradient mask
+                if direction == 'horizontal':
+                    gradient = torch.linspace(1.0-strength, 1.0+strength, w).view(1, w).expand(h, w)
+                elif direction == 'vertical':
+                    gradient = torch.linspace(1.0-strength, 1.0+strength, h).view(h, 1).expand(h, w)
+                else:  # diagonal
+                    gradient_h = torch.linspace(0, 1, h).view(h, 1).expand(h, w)
+                    gradient_w = torch.linspace(0, 1, w).view(1, w).expand(h, w)
+                    gradient = 1.0 + strength * (gradient_h + gradient_w - 1.0)
+                
+                # Apply gradient per channel with random color tint
+                for c in range(3):
+                    if random.random() < 0.7:  # Apply to some channels only
+                        padded_image[c] = padded_image[c] * gradient
+            
             # Center crop
             crop_size = 256
             h, w = padded_image.shape[-2:]
@@ -251,26 +277,13 @@ class PlatingDefectDataset(Dataset):
             image = padded_image[:, top:top+crop_size, left:left+crop_size]
             mask = padded_mask[:, top:top+crop_size, left:left+crop_size]
             
-            # Apply color transforms only to image
-            if random.random() < 0.8:  # 80% chance of color augmentation
-                brightness = random.uniform(0.8, 1.2)
-                contrast = random.uniform(0.8, 1.2)
-                image = transforms.functional.adjust_brightness(image, brightness)
-                image = transforms.functional.adjust_contrast(image, contrast)
-            
-            # Normalize
-            image = transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )(image)
+            # No need to normalize since SegFormer expects [0,1] range
             
         else:
             # For validation, only apply basic transforms
             image = transforms.Compose([
                 transforms.Resize((256, 256)),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                  std=[0.229, 0.224, 0.225])
             ])(image)
             
             mask = transforms.Resize(
@@ -289,3 +302,34 @@ class PlatingDefectDataset(Dataset):
         for label in self.labels:
             distribution[label] = distribution.get(label, 0) + 1
         return distribution 
+
+    def get_class_names(self):
+        """
+        Returns a list of class names indexed by their corresponding class index
+        
+        Returns:
+            list: List of class names where index corresponds to class index
+        """
+        # Create a list to store class names in order
+        class_names = [""] * len(self.defect_to_idx)
+        
+        # Fill the list using the defect_to_idx mapping
+        for defect_name, idx in self.defect_to_idx.items():
+            class_names[idx] = defect_name
+        
+        return class_names
+
+    def get_class_name(self, class_idx):
+        """
+        Get class name for a specific class index
+        
+        Args:
+            class_idx (int): The class index
+            
+        Returns:
+            str: The class name corresponding to the index, or 'Unknown' if not found
+        """
+        class_names = self.get_class_names()
+        if 0 <= class_idx < len(class_names):
+            return class_names[class_idx]
+        return "Unknown" 

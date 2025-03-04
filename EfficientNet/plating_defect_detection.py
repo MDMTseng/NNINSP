@@ -11,12 +11,16 @@ import time
 import random
 import argparse
 from model import SegmentationModel
+from datetime import datetime
+from dataset import PlatingDefectDataset
 
 class PlatingDefectDetector:
     def __init__(self, model_path=None):
-        # Define defect types with OK as first class
-        self.defect_types = ['OK', 'crazing', 'inclusion', 'patches', 'pitted_surface', 'rolled-in_scale', 'scratches']
+        # Load class names from dataset instead of hardcoding
+        self.defect_types = load_class_names()
         self.num_classes = len(self.defect_types)
+        
+        print(f"Loaded {self.num_classes} classes: {self.defect_types}")
         
         # Initialize device
         self.device = torch.device('mps' if torch.backends.mps.is_available() 
@@ -27,40 +31,33 @@ class PlatingDefectDetector:
         # Initialize model
         self.model = self._load_model(model_path)
         
-        # Initialize transform
+        # Initialize transform without normalization
         self.transform = transforms.Compose([
             transforms.Resize((256, 256)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                              std=[0.229, 0.224, 0.225])
         ])
 
     def _load_model(self, model_path):
-        model = SegmentationModel(num_classes=self.num_classes)
-        
+        """Load the model with proper configuration"""
         if model_path and os.path.exists(model_path):
             print(f"Loading model from {model_path}")
-            model.load_state_dict(torch.load(model_path, map_location=self.device))
+            model = SegmentationModel.load_model(model_path, device=self.device)
         else:
             print("Warning: No model path provided or model not found. Using untrained model.")
+            model = SegmentationModel(num_classes=self.num_classes).to(self.device)
         
-        model = model.to(self.device)
         model.eval()
         return model
 
     def detect_defect(self, image_path, threshold=0.5, ok_sensitivity=1.0):
         """
         Detect defects in an image with adjustable sensitivity
-        Args:
-            image_path: Path to the image
-            threshold: Probability threshold for defect detection
-            ok_sensitivity: Value to multiply OK class probabilities (lower values make detection more sensitive)
         """
         # Load and preprocess image
         image = Image.open(image_path).convert('RGB')
         original_size = image.size
         
-        # Transform image
+        # Transform image (now in [0,1] range for SegFormer)
         image_tensor = self.transform(image).unsqueeze(0)
         image_tensor = image_tensor.to(self.device)
 
@@ -70,13 +67,11 @@ class PlatingDefectDetector:
             # Apply softmax to get probabilities
             probabilities = torch.softmax(output, dim=1)
             
-            # Adjust OK class (index 0) probability by sensitivity factor
+            # Adjust OK class probability
             probabilities[:, 0] *= ok_sensitivity
-            
-            # Renormalize probabilities after adjustment
             probabilities = probabilities / probabilities.sum(dim=1, keepdim=True)
             
-            # Get predicted class for each pixel (highest probability)
+            # Get predictions
             predictions = torch.argmax(probabilities, dim=1)
             
             # Convert predictions to numpy
@@ -104,10 +99,23 @@ class PlatingDefectDetector:
         original = Image.open(image_path).convert('RGB')
         original_np = np.array(original)
         
-        # Create figure with subplots - Updated for 7 classes (OK + 6 defects)
-        num_rows = 2
-        num_cols = 5  # Increased from 4 to 5 to fit all probability maps
-        plt.figure(figsize=(25, 10))  # Increased width to accommodate more subplots
+        # Calculate grid layout based on number of classes
+        num_prob_plots = len(self.defect_types)
+        
+        # Determine grid layout dynamically
+        # We need at least 2 plots (original + overlay) plus class probability maps
+        total_plots = 2 + num_prob_plots
+        
+        if total_plots <= 6:
+            num_rows, num_cols = 2, 3
+        elif total_plots <= 8:
+            num_rows, num_cols = 2, 4
+        elif total_plots <= 10:
+            num_rows, num_cols = 2, 5
+        else:
+            num_rows, num_cols = 3, 5  # Can accommodate up to 15 plots
+        
+        plt.figure(figsize=(num_cols * 5, num_rows * 5))  # Adjust figure size based on grid
         
         # Plot original image
         plt.subplot(num_rows, num_cols, 1)
@@ -115,16 +123,28 @@ class PlatingDefectDetector:
         plt.title('Original Image')
         plt.axis('off')
         
-        # Create color map for different defect types
-        colors = [
-            [0, 0, 0, 0],      # Transparent for OK
-            [1, 0, 0, 0.7],    # Semi-transparent Red for crazing
-            [0, 1, 0, 0.7],    # Semi-transparent Green for inclusion
-            [0, 0, 1, 0.7],    # Semi-transparent Blue for patches
-            [1, 1, 0, 0.7],    # Semi-transparent Yellow for pitted_surface
-            [1, 0, 1, 0.7],    # Semi-transparent Magenta for rolled-in_scale
-            [0, 1, 1, 0.7],    # Semi-transparent Cyan for scratches
+        # Create color map for different defect types - dynamically based on number of classes
+        colors = []
+        # First class (OK) is transparent
+        colors.append([0, 0, 0, 0])  
+        
+        # Basic colors for up to 6 defect classes
+        base_colors = [
+            [1, 0, 0, 0.7],    # Red
+            [0, 1, 0, 0.7],    # Green
+            [0, 0, 1, 0.7],    # Blue
+            [1, 1, 0, 0.7],    # Yellow
+            [1, 0, 1, 0.7],    # Magenta
+            [0, 1, 1, 0.7],    # Cyan
         ]
+        
+        # Add colors for each class
+        for i in range(1, self.num_classes):
+            if i <= len(base_colors):
+                colors.append(base_colors[i-1])
+            else:
+                # Generate random colors for any additional classes
+                colors.append([random.random(), random.random(), random.random(), 0.7])
         
         # Create overlay mask with alpha channel
         h, w, _ = original_np.shape
@@ -297,7 +317,7 @@ def main():
     
     # Set paths
     model_path = 'best_model.pth'
-    test_folder = 'NEU-DET/train/images'
+    test_folder = 'NEU-DET/validation/images'
     output_folder = 'results'
     
     # Initialize detector
@@ -355,6 +375,87 @@ def main():
             num_samples=args.n,
             ok_sensitivity=args.sensitivity
         )
+
+    # Save the final model with timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    save_path = f'model_{timestamp}.pth'
+    detector.model.save_model(save_path)  # Use new save method
+    print(f"Model saved to {save_path}")
+
+def load_class_names():
+    """Load class names from dataset"""
+    # Initialize minimal dataset object just to get class mapping
+    dataset = PlatingDefectDataset(root_dir='NEU-DET', transform=None, train=False)
+    class_names = dataset.get_class_names()
+    return class_names
+
+def predict_defect(image_path, model_path='best_model.pth'):
+    """Predict defects on a single image"""
+    # Load class names
+    class_names = load_class_names()
+    print(f"Using classes: {class_names}")
+    
+    # Load model
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = SegmentationModel(num_classes=len(class_names))
+    model = SegmentationModel.load_model(model_path, device)
+    model.eval()
+    
+    # ... rest of your prediction code ...
+    
+    # Use class_names for visualization and reporting
+    # For example:
+    pred_class_idx = prediction.argmax().item()
+    defect_name = class_names[pred_class_idx]
+    print(f"Predicted defect: {defect_name}")
+
+def classify_image(image_path, model_path='best_model.pth', sensitivity=1.0):
+    """
+    Complete image classification function that returns class probabilities and visualizes results
+    
+    Args:
+        image_path: Path to the image to classify
+        model_path: Path to the trained model
+        sensitivity: OK class sensitivity (lower = more sensitive to defects)
+    
+    Returns:
+        dict: Classification results with class probabilities and path to visualization
+    """
+    detector = PlatingDefectDetector(model_path)
+    
+    # Detect defects
+    pred_mask, prob_masks = detector.detect_defect(
+        image_path, 
+        ok_sensitivity=sensitivity
+    )
+    
+    # Get dominant class
+    unique_classes, counts = np.unique(pred_mask, return_counts=True)
+    dominant_class_idx = unique_classes[np.argmax(counts)]
+    dominant_class = detector.defect_types[dominant_class_idx]
+    
+    # Calculate confidence scores
+    class_areas = {}
+    for class_idx, class_name in enumerate(detector.defect_types):
+        pixel_count = np.sum(pred_mask == class_idx)
+        percentage = (pixel_count / pred_mask.size) * 100
+        class_areas[class_name] = percentage
+    
+    # Create results directory
+    results_dir = 'results'
+    os.makedirs(results_dir, exist_ok=True)
+    
+    # Create visualization
+    basename = os.path.splitext(os.path.basename(image_path))[0]
+    output_path = os.path.join(results_dir, f"{basename}_result.png")
+    detector.visualize_results(image_path, pred_mask, prob_masks, save_path=output_path)
+    
+    # Return results dictionary
+    return {
+        'dominant_class': dominant_class,
+        'class_percentages': class_areas,
+        'visualization_path': output_path
+    }
 
 if __name__ == '__main__':
     main() 

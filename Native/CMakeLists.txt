@@ -4,9 +4,13 @@ project(plating_defect_detector)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Add debug build type
+set(CMAKE_BUILD_TYPE Debug)
+
 # 設置平台特定的編譯選項
 if(APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0")  # Add debug flags
     
     # 在 M1 Mac 上只使用 arm64 架構
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
@@ -25,8 +29,9 @@ if(APPLE)
     find_library(COREIMAGE CoreImage REQUIRED)
     find_library(COREVIDEO CoreVideo REQUIRED)
     find_library(VISION Vision REQUIRED)
-elseif(MSVC)
+else(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Zi /Od")  # Add debug flags for MSVC
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
     
     # Windows 需要 CUDA 和 TensorRT
@@ -42,6 +47,8 @@ message(STATUS "CMAKE_SYSTEM_PROCESSOR = ${CMAKE_SYSTEM_PROCESSOR}")
 message(STATUS "CMAKE_OSX_ARCHITECTURES = ${CMAKE_OSX_ARCHITECTURES}")
 message(STATUS "OpenCV_INCLUDE_DIRS = ${OpenCV_INCLUDE_DIRS}")
 message(STATUS "OpenCV_LIBS = ${OpenCV_LIBS}")
+message(STATUS "CMAKE_BUILD_TYPE = ${CMAKE_BUILD_TYPE}")
+message(STATUS "CMAKE_CXX_FLAGS_DEBUG = ${CMAKE_CXX_FLAGS_DEBUG}")
 
 # 確保 OpenCV 的包含路徑正確
 include_directories(${OpenCV_INCLUDE_DIRS})
@@ -51,8 +58,10 @@ if(APPLE)
     add_executable(plating_detector 
         src/main.cpp
         src/coreml_engine.mm
+        src/coreml_engine_factory.mm
         src/image_processor.cpp
         src/inference_engine.cpp
+        src/model_info.cpp
     )
     
     # 為 Objective-C++ 文件啟用 ARC
@@ -100,4 +109,11 @@ if(APPLE)
         BUILD_WITH_INSTALL_RPATH TRUE
         INSTALL_RPATH "@executable_path;@executable_path/../lib"
     )
-endif() 
+endif()
+
+# Add ImageIO framework
+find_library(IMAGEIO_LIBRARY ImageIO REQUIRED)
+target_link_libraries(plating_detector PRIVATE ${IMAGEIO_LIBRARY})
+
+# Optional: Silence deprecation warnings
+target_compile_options(plating_detector PRIVATE -Wno-deprecated-declarations) 
